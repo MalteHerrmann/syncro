@@ -17,7 +17,10 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Add a folder to the watch list
-    Add { path: PathBuf },
+    Add {
+        /// Path to the repository (defaults to current directory)
+        path: Option<PathBuf>,
+    },
     /// Remove a folder from the watch list
     Remove { path: PathBuf },
     /// Print watched folders and their status
@@ -29,7 +32,10 @@ fn main() {
 
     let result = match cli.command {
         None => tui::run().map_err(|e| e.to_string()),
-        Some(Commands::Add { path }) => config::add_repo(&path).map_err(|e| e.to_string()),
+        Some(Commands::Add { path }) => {
+            let target_path = path.unwrap_or_else(|| PathBuf::from("."));
+            config::add_repo(&target_path).map_err(|e| e.to_string())
+        }
         Some(Commands::Remove { path }) => config::remove_repo(&path).map_err(|e| e.to_string()),
         Some(Commands::List) => cmd_list(),
     };
