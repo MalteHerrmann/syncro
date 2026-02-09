@@ -30,7 +30,10 @@ cargo clippy                   # Run linter
 
 ### Module Structure
 
-- **config**: Manages the YAML configuration file stored in `~/.config/syncro/config.yaml`, containing the list of watched repository paths. Provides `add_repo()`, `remove_repo()`, `load()`, and `save()`.
+- **config**: Manages the YAML configuration file stored in `~/.config/syncro/config.yaml`, containing the list of watched paths (can be individual Git repos or parent directories containing multiple Git repos). Provides:
+  - `add_repo()`: Adds a path (validates it's either a Git repo or contains Git repos)
+  - `expand_repos()`: Expands config paths into actual Git repos (individual repos pass through, parent directories expand to their Git subdirectories)
+  - `remove_repo()`, `load()`, and `save()`
 
 - **git**: Git operations module with two main responsibilities:
   - `repo_status()`: Queries a repository's status (branch, modified/untracked/deleted files, unpushed commits, remote tracking). Runs git commands via `run_git()` helper.
@@ -57,12 +60,15 @@ cargo clippy                   # Run linter
 
 ### Configuration
 
-Config file is stored at `~/.config/syncro/config.yaml` (or platform equivalent via `dirs::config_dir()`). Format:
+Config file is stored at `~/.config/syncro/config.yaml` (or platform equivalent via `dirs::config_dir()`). Supports both individual Git repositories and parent directories containing Git repos:
+
 ```yaml
 repos:
-  - /path/to/repo1
-  - /path/to/repo2
+  - /path/to/individual/repo
+  - /path/to/parent/directory  # Will monitor all Git repos in subdirectories
 ```
+
+When a parent directory is added, the tool dynamically discovers Git repositories in its immediate subdirectories each time it runs, making it future-proof for newly added repos.
 
 ### TUI Key Bindings
 

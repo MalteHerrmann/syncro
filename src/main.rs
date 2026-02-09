@@ -16,9 +16,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Add a folder to the watch list
+    /// Add a Git repository or a directory containing Git repositories to the watch list
     Add {
-        /// Path to the repository (defaults to current directory)
+        /// Path to the repository or parent directory (defaults to current directory)
         path: Option<PathBuf>,
     },
     /// Remove a folder from the watch list
@@ -53,7 +53,15 @@ fn cmd_list() -> Result<(), String> {
         return Ok(());
     }
 
-    for repo_path in &cfg.repos {
+    // Expand any parent directories into individual repos
+    let expanded_repos = config::expand_repos(&cfg.repos);
+
+    if expanded_repos.is_empty() {
+        println!("No Git repositories found in watched paths.");
+        return Ok(());
+    }
+
+    for repo_path in &expanded_repos {
         let status = git::repo_status(repo_path);
         let name = status.display_name();
         let branch = &status.branch;

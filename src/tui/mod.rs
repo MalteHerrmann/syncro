@@ -105,8 +105,15 @@ impl App {
     }
 
     fn refresh_repos(&mut self) {
-        let paths: Vec<_> = self.repos.iter().map(|r| r.path.clone()).collect();
-        let handles: Vec<_> = paths
+        // Reload config and expand to pick up any new repos
+        let cfg = match config::load() {
+            Ok(cfg) => cfg,
+            Err(_) => return,
+        };
+
+        let expanded_repos = config::expand_repos(&cfg.repos);
+
+        let handles: Vec<_> = expanded_repos
             .into_iter()
             .map(|p| thread::spawn(move || git::repo_status(&p)))
             .collect();
@@ -134,9 +141,16 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // Expand any parent directories into individual repos
+    let expanded_repos = config::expand_repos(&cfg.repos);
+
+    if expanded_repos.is_empty() {
+        println!("No Git repositories found in watched paths.");
+        return Ok(());
+    }
+
     // Query statuses in parallel
-    let handles: Vec<_> = cfg
-        .repos
+    let handles: Vec<_> = expanded_repos
         .into_iter()
         .map(|p| thread::spawn(move || git::repo_status(&p)))
         .collect();
