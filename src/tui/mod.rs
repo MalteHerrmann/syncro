@@ -1,21 +1,28 @@
 mod widgets;
 
+use std::collections::HashMap;
 use std::io;
+use std::path::PathBuf;
 use std::thread;
 
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use crossterm::execute;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Padding, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph};
 use ratatui::Terminal;
 
 use crate::config;
-use crate::git::{self, RepoStatus, SyncResult};
-use widgets::{HelpBar, RepoListWidget};
+use crate::git::{self, FileChange, RepoStatus, SyncResult};
+use widgets::{
+    ChangedFilesWidget, CommitFilesWidget, DiffViewWidget, FocusedPane, HelpBar,
+    RepoDetailWidget, RepoListWidget, UnpushedCommitsWidget,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 enum AppState {
@@ -30,6 +37,11 @@ struct App {
     cursor: usize,
     state: AppState,
     sync_results: Vec<SyncResult>,
+    focused_pane: FocusedPane,
+    commit_cursor: usize,
+    file_cursor: usize,
+    commit_files_cache: HashMap<String, Vec<FileChange>>,
+    diff_cache: HashMap<(PathBuf, String), String>,
 }
 
 impl App {
@@ -44,38 +56,126 @@ impl App {
             cursor: 0,
             state: AppState::Browsing,
             sync_results: Vec::new(),
+            focused_pane: FocusedPane::Repos,
+            commit_cursor: 0,
+            file_cursor: 0,
+            commit_files_cache: HashMap::new(),
+            diff_cache: HashMap::new(),
         }
     }
 
+    fn current_repo(&self) -> Option<&RepoStatus> {
+        self.repos.get(self.cursor)
+    }
+
     fn move_down(&mut self) {
-        if !self.repos.is_empty() && self.cursor < self.repos.len() - 1 {
-            self.cursor += 1;
+        match self.focused_pane {
+            FocusedPane::Repos => {
+                if !self.repos.is_empty() && self.cursor < self.repos.len() - 1 {
+                    self.cursor += 1;
+                    self.commit_cursor = 0;
+                    self.file_cursor = 0;
+                }
+            }
+            FocusedPane::Commits => {
+                if let Some(repo) = self.current_repo()
+                    && !repo.unpushed_commits.is_empty()
+                        && self.commit_cursor < repo.unpushed_commits.len() - 1
+                    {
+                        self.commit_cursor += 1;
+                        self.ensure_commit_files_cached();
+                    }
+            }
+            FocusedPane::Files => {
+                if let Some(repo) = self.current_repo()
+                    && !repo.changed_files.is_empty()
+                        && self.file_cursor < repo.changed_files.len() - 1
+                    {
+                        self.file_cursor += 1;
+                        self.ensure_diff_cached();
+                    }
+            }
         }
     }
 
     fn move_up(&mut self) {
-        if self.cursor > 0 {
-            self.cursor -= 1;
+        match self.focused_pane {
+            FocusedPane::Repos => {
+                if self.cursor > 0 {
+                    self.cursor -= 1;
+                    self.commit_cursor = 0;
+                    self.file_cursor = 0;
+                }
+            }
+            FocusedPane::Commits => {
+                if self.commit_cursor > 0 {
+                    self.commit_cursor -= 1;
+                    self.ensure_commit_files_cached();
+                }
+            }
+            FocusedPane::Files => {
+                if self.file_cursor > 0 {
+                    self.file_cursor -= 1;
+                    self.ensure_diff_cached();
+                }
+            }
         }
     }
 
     fn jump_top(&mut self) {
-        self.cursor = 0;
+        match self.focused_pane {
+            FocusedPane::Repos => {
+                self.cursor = 0;
+                self.commit_cursor = 0;
+                self.file_cursor = 0;
+            }
+            FocusedPane::Commits => {
+                self.commit_cursor = 0;
+                self.ensure_commit_files_cached();
+            }
+            FocusedPane::Files => {
+                self.file_cursor = 0;
+                self.ensure_diff_cached();
+            }
+        }
     }
 
     fn jump_bottom(&mut self) {
-        if !self.repos.is_empty() {
-            self.cursor = self.repos.len() - 1;
+        match self.focused_pane {
+            FocusedPane::Repos => {
+                if !self.repos.is_empty() {
+                    self.cursor = self.repos.len() - 1;
+                    self.commit_cursor = 0;
+                    self.file_cursor = 0;
+                }
+            }
+            FocusedPane::Commits => {
+                if let Some(repo) = self.current_repo()
+                    && !repo.unpushed_commits.is_empty() {
+                        self.commit_cursor = repo.unpushed_commits.len() - 1;
+                        self.ensure_commit_files_cached();
+                    }
+            }
+            FocusedPane::Files => {
+                if let Some(repo) = self.current_repo()
+                    && !repo.changed_files.is_empty() {
+                        self.file_cursor = repo.changed_files.len() - 1;
+                        self.ensure_diff_cached();
+                    }
+            }
         }
     }
 
     fn toggle_selection(&mut self) {
-        if !self.repos.is_empty() {
+        if self.focused_pane == FocusedPane::Repos && !self.repos.is_empty() {
             self.selected[self.cursor] = !self.selected[self.cursor];
         }
     }
 
     fn sync_selected(&mut self) {
+        if self.focused_pane != FocusedPane::Repos {
+            return;
+        }
         self.state = AppState::Syncing;
         self.sync_results.clear();
 
@@ -105,7 +205,6 @@ impl App {
     }
 
     fn refresh_repos(&mut self) {
-        // Reload config and expand to pick up any new repos
         let cfg = match config::load() {
             Ok(cfg) => cfg,
             Err(_) => return,
@@ -131,6 +230,87 @@ impl App {
         if self.cursor >= self.repos.len() && !self.repos.is_empty() {
             self.cursor = self.repos.len() - 1;
         }
+        self.commit_cursor = 0;
+        self.file_cursor = 0;
+        self.commit_files_cache.clear();
+        self.diff_cache.clear();
+    }
+
+    fn set_focused_pane(&mut self, pane: FocusedPane) {
+        self.focused_pane = pane;
+        // Reset sub-cursors and trigger caching for the newly focused pane
+        match pane {
+            FocusedPane::Repos => {}
+            FocusedPane::Commits => {
+                self.commit_cursor = 0;
+                self.ensure_commit_files_cached();
+            }
+            FocusedPane::Files => {
+                self.file_cursor = 0;
+                self.ensure_diff_cached();
+            }
+        }
+    }
+
+    /// Extract commit hash from an oneline format string (first word).
+    fn current_commit_hash(&self) -> Option<String> {
+        let repo = self.current_repo()?;
+        let commit_line = repo.unpushed_commits.get(self.commit_cursor)?;
+        commit_line.split_whitespace().next().map(String::from)
+    }
+
+    fn ensure_commit_files_cached(&mut self) {
+        let Some(hash) = self.current_commit_hash() else {
+            return;
+        };
+        if self.commit_files_cache.contains_key(&hash) {
+            return;
+        }
+        let Some(repo) = self.current_repo() else {
+            return;
+        };
+        let files = git::commit_files(&repo.path, &hash);
+        self.commit_files_cache.insert(hash, files);
+    }
+
+    fn ensure_diff_cached(&mut self) {
+        let Some(repo) = self.current_repo() else {
+            return;
+        };
+        let Some(file) = repo.changed_files.get(self.file_cursor) else {
+            return;
+        };
+        let key = (repo.path.clone(), file.path.clone());
+        if self.diff_cache.contains_key(&key) {
+            return;
+        }
+        let is_untracked = file.status == "?";
+        let diff = git::file_diff(&repo.path, &file.path, is_untracked);
+        self.diff_cache.insert(key, diff);
+    }
+
+    fn cached_commit_files(&self) -> &[FileChange] {
+        if let Some(hash) = self.current_commit_hash()
+            && let Some(files) = self.commit_files_cache.get(&hash) {
+                return files;
+            }
+        &[]
+    }
+
+    fn cached_diff(&self) -> (&str, &str) {
+        let Some(repo) = self.current_repo() else {
+            return ("", "");
+        };
+        let Some(file) = repo.changed_files.get(self.file_cursor) else {
+            return ("", "");
+        };
+        let key = (repo.path.clone(), file.path.clone());
+        let diff = self
+            .diff_cache
+            .get(&key)
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        (file.path.as_str(), diff)
     }
 }
 
@@ -141,7 +321,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Expand any parent directories into individual repos
     let expanded_repos = config::expand_repos(&cfg.repos);
 
     if expanded_repos.is_empty() {
@@ -149,7 +328,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Query statuses in parallel
     let handles: Vec<_> = expanded_repos
         .into_iter()
         .map(|p| thread::spawn(move || git::repo_status(&p)))
@@ -162,7 +340,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut app = App::new(repos);
 
-    // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -171,7 +348,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let result = run_event_loop(&mut terminal, &mut app);
 
-    // Restore terminal
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
 
@@ -186,27 +362,94 @@ fn run_event_loop(
         terminal.draw(|f| {
             let area = f.area();
 
+            // Clear stale content from ratatui's alternating buffer to prevent
+            // ghost artifacts when the layout changes (e.g. two-column → single-column).
+            f.render_widget(Clear, area);
+
             match app.state {
                 AppState::Browsing | AppState::Syncing => {
-                    let chunks = Layout::vertical([
+                    let outer = Layout::vertical([
                         Constraint::Min(3),
                         Constraint::Length(1),
                     ])
                     .split(area);
 
-                    let widget = RepoListWidget {
-                        repos: &app.repos,
-                        selected: &app.selected,
-                        cursor: app.cursor,
-                    };
-                    f.render_widget(widget, chunks[0]);
-                    f.render_widget(HelpBar, chunks[1]);
+                    let current_repo = app.repos.get(app.cursor);
+                    let show_right_panel = app.focused_pane != FocusedPane::Repos;
+
+                    let main_area = outer[0];
+
+                    if show_right_panel {
+                        // Two-column layout
+                        let columns = Layout::default()
+                            .direction(Direction::Horizontal)
+                            .constraints([
+                                Constraint::Percentage(55),
+                                Constraint::Percentage(45),
+                            ])
+                            .split(main_area);
+
+                        let left_panes = Layout::vertical([
+                            Constraint::Min(5),
+                            Constraint::Length(8),
+                            Constraint::Length(8),
+                            Constraint::Length(3),
+                        ])
+                        .split(columns[0]);
+
+                        render_left_panes(f, app, current_repo, &left_panes);
+
+                        // Explicitly clear the right column to prevent artifacts when
+                        // switching between files with different diff lengths.
+                        f.render_widget(Clear, columns[1]);
+
+                        // Right panel content
+                        match app.focused_pane {
+                            FocusedPane::Commits => {
+                                let files = app.cached_commit_files();
+                                f.render_widget(
+                                    CommitFilesWidget { files },
+                                    columns[1],
+                                );
+                            }
+                            FocusedPane::Files => {
+                                let (title, diff) = app.cached_diff();
+                                f.render_widget(
+                                    DiffViewWidget {
+                                        title,
+                                        diff,
+                                        scroll: 0,
+                                    },
+                                    columns[1],
+                                );
+                            }
+                            FocusedPane::Repos => unreachable!(),
+                        }
+                    } else {
+                        // Single-column layout
+                        let left_panes = Layout::vertical([
+                            Constraint::Min(5),
+                            Constraint::Length(8),
+                            Constraint::Length(8),
+                            Constraint::Length(3),
+                        ])
+                        .split(main_area);
+
+                        render_left_panes(f, app, current_repo, &left_panes);
+                    }
+
+                    f.render_widget(
+                        HelpBar {
+                            focused_pane: app.focused_pane,
+                        },
+                        outer[1],
+                    );
 
                     if app.state == AppState::Syncing {
                         let popup = Paragraph::new("Syncing...")
                             .style(Style::default().fg(Color::Yellow))
                             .block(Block::default().borders(Borders::ALL));
-                        let popup_area = centered_rect(30, 3, area);
+                        let popup_area = centered_rect(30, 3, main_area);
                         f.render_widget(popup, popup_area);
                     }
                 }
@@ -280,13 +523,18 @@ fn run_event_loop(
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         return Ok(())
                     }
+                    KeyCode::Char('1') => app.set_focused_pane(FocusedPane::Repos),
+                    KeyCode::Char('2') => app.set_focused_pane(FocusedPane::Commits),
+                    KeyCode::Char('3') => app.set_focused_pane(FocusedPane::Files),
                     KeyCode::Char('j') | KeyCode::Down => app.move_down(),
                     KeyCode::Char('k') | KeyCode::Up => app.move_up(),
                     KeyCode::Char('g') => app.jump_top(),
                     KeyCode::Char('G') => app.jump_bottom(),
                     KeyCode::Char(' ') => app.toggle_selection(),
                     KeyCode::Enter => {
-                        if app.selected.iter().any(|&s| s) {
+                        if app.focused_pane == FocusedPane::Repos
+                            && app.selected.iter().any(|&s| s)
+                        {
                             app.sync_selected();
                         }
                     }
@@ -307,6 +555,43 @@ fn run_event_loop(
             }
         }
     }
+}
+
+fn render_left_panes(
+    f: &mut ratatui::Frame,
+    app: &App,
+    current_repo: Option<&RepoStatus>,
+    panes: &[ratatui::layout::Rect],
+) {
+    f.render_widget(
+        RepoListWidget {
+            repos: &app.repos,
+            selected: &app.selected,
+            cursor: app.cursor,
+            focused: app.focused_pane == FocusedPane::Repos,
+        },
+        panes[0],
+    );
+
+    f.render_widget(
+        UnpushedCommitsWidget {
+            repo: current_repo,
+            cursor: app.commit_cursor,
+            focused: app.focused_pane == FocusedPane::Commits,
+        },
+        panes[1],
+    );
+
+    f.render_widget(
+        ChangedFilesWidget {
+            repo: current_repo,
+            cursor: app.file_cursor,
+            focused: app.focused_pane == FocusedPane::Files,
+        },
+        panes[2],
+    );
+
+    f.render_widget(RepoDetailWidget { repo: current_repo }, panes[3]);
 }
 
 fn centered_rect(width: u16, height: u16, area: ratatui::layout::Rect) -> ratatui::layout::Rect {

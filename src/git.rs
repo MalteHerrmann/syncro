@@ -6,6 +6,12 @@ use chrono::Local;
 use crate::error::SyncroError;
 
 #[derive(Debug, Clone)]
+pub struct FileChange {
+    pub status: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct RepoStatus {
     pub path: PathBuf,
     pub branch: String,
@@ -13,6 +19,8 @@ pub struct RepoStatus {
     pub untracked: usize,
     pub deleted: usize,
     pub unpushed_commits: Vec<String>,
+    pub changed_files: Vec<FileChange>,
+    pub remote_url: Option<String>,
     pub has_remote: bool,
     pub branch_on_remote: bool,
     pub error: Option<String>,
@@ -70,7 +78,7 @@ fn run_git(repo: &Path, args: &[&str]) -> Result<String, String> {
         .map_err(|e| format!("failed to run git: {e}"))?;
 
     if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        Ok(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
     } else {
         Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
     }
@@ -84,6 +92,8 @@ pub fn repo_status(path: &Path) -> RepoStatus {
         untracked: 0,
         deleted: 0,
         unpushed_commits: Vec::new(),
+        changed_files: Vec::new(),
+        remote_url: None,
         has_remote: false,
         branch_on_remote: false,
         error: None,
@@ -102,15 +112,29 @@ pub fn repo_status(path: &Path) -> RepoStatus {
     match run_git(path, &["status", "--porcelain"]) {
         Ok(output) => {
             for line in output.lines() {
-                if line.len() < 2 {
+                if line.len() < 3 {
                     continue;
                 }
                 let code = &line[..2];
-                match code {
-                    s if s.contains('?') => status.untracked += 1,
-                    s if s.contains('D') => status.deleted += 1,
-                    _ => status.modified += 1,
-                }
+                let file_path = line[3..].to_string();
+                let status_char = match code {
+                    s if s.contains('?') => {
+                        status.untracked += 1;
+                        "?"
+                    }
+                    s if s.contains('D') => {
+                        status.deleted += 1;
+                        "D"
+                    }
+                    _ => {
+                        status.modified += 1;
+                        "M"
+                    }
+                };
+                status.changed_files.push(FileChange {
+                    status: status_char.to_string(),
+                    path: file_path,
+                });
             }
         }
         Err(e) => {
@@ -125,12 +149,17 @@ pub fn repo_status(path: &Path) -> RepoStatus {
         .unwrap_or(false);
 
     if status.has_remote {
+        // Get remote URL
+        if let Ok(url) = run_git(path, &["remote", "get-url", "origin"]) {
+            status.remote_url = Some(url);
+        }
+
         // Check unpushed commits
-        let upstream_ref = format!("@{{u}}..HEAD");
-        if let Ok(output) = run_git(path, &["log", &upstream_ref, "--oneline"]) {
-            if !output.is_empty() {
-                status.unpushed_commits = output.lines().map(String::from).collect();
-            }
+        let upstream_ref = "@{u}..HEAD".to_string();
+        if let Ok(output) = run_git(path, &["log", &upstream_ref, "--oneline"])
+            && !output.is_empty()
+        {
+            status.unpushed_commits = output.lines().map(String::from).collect();
         }
 
         // Check if branch exists on remote
@@ -147,6 +176,42 @@ pub struct SyncResult {
     pub committed: bool,
     pub pushed: bool,
     pub error: Option<String>,
+}
+
+/// Get files changed in a specific commit.
+pub fn commit_files(repo_path: &Path, commit_hash: &str) -> Vec<FileChange> {
+    let output = match run_git(repo_path, &["show", "--name-status", "--format=", commit_hash]) {
+        Ok(o) => o,
+        Err(_) => return Vec::new(),
+    };
+
+    output
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter_map(|line| {
+            let mut parts = line.splitn(2, '\t');
+            let status = parts.next()?.trim().to_string();
+            let path = parts.next()?.trim().to_string();
+            Some(FileChange { status, path })
+        })
+        .collect()
+}
+
+/// Get working-tree diff for a file.
+pub fn file_diff(repo_path: &Path, file_path: &str, is_untracked: bool) -> String {
+    if is_untracked {
+        // git diff --no-index returns exit code 1 when differences are found,
+        // but the diff output is on stdout. run_git would return stderr (empty)
+        // in that case, so we call Command directly to capture stdout.
+        Command::new("git")
+            .args(["-C", &repo_path.display().to_string()])
+            .args(["diff", "--no-index", "--no-color", "/dev/null", file_path])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim_end().to_string())
+            .unwrap_or_default()
+    } else {
+        run_git(repo_path, &["diff", "--no-color", file_path]).unwrap_or_default()
+    }
 }
 
 pub fn sync_repo(path: &Path) -> Result<SyncResult, SyncroError> {
