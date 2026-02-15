@@ -21,8 +21,8 @@ enum Commands {
         /// Path to the repository or parent directory (defaults to current directory)
         path: Option<PathBuf>,
     },
-    /// Remove a folder from the watch list
-    Remove { path: PathBuf },
+    /// Remove a folder from the watch list (defaults to current directory)
+    Remove { path: Option<PathBuf> },
     /// Print watched folders and their status
     List,
 }
@@ -36,7 +36,10 @@ fn main() {
             let target_path = path.unwrap_or_else(|| PathBuf::from("."));
             config::add_repo(&target_path).map_err(|e| e.to_string())
         }
-        Some(Commands::Remove { path }) => config::remove_repo(&path).map_err(|e| e.to_string()),
+        Some(Commands::Remove { path }) => {
+            let target_path = path.unwrap_or_else(|| PathBuf::from("."));
+            config::remove_repo(&target_path).map_err(|e| e.to_string())
+        }
         Some(Commands::List) => cmd_list(),
     };
 
