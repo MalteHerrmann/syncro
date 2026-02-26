@@ -78,7 +78,9 @@ fn run_git(repo: &Path, args: &[&str]) -> Result<String, String> {
         .map_err(|e| format!("failed to run git: {e}"))?;
 
     if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .trim_end()
+            .to_string())
     } else {
         Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
     }
@@ -164,8 +166,7 @@ pub fn repo_status(path: &Path) -> RepoStatus {
 
         // Check if branch exists on remote
         let remote_branch = format!("origin/{}", status.branch);
-        status.branch_on_remote = run_git(path, &["rev-parse", "--verify", &remote_branch])
-            .is_ok();
+        status.branch_on_remote = run_git(path, &["rev-parse", "--verify", &remote_branch]).is_ok();
     }
 
     status
@@ -180,7 +181,10 @@ pub struct SyncResult {
 
 /// Get files changed in a specific commit.
 pub fn commit_files(repo_path: &Path, commit_hash: &str) -> Vec<FileChange> {
-    let output = match run_git(repo_path, &["show", "--name-status", "--format=", commit_hash]) {
+    let output = match run_git(
+        repo_path,
+        &["show", "--name-status", "--format=", commit_hash],
+    ) {
         Ok(o) => o,
         Err(_) => return Vec::new(),
     };
@@ -260,12 +264,13 @@ pub fn sync_repo(path: &Path) -> Result<SyncResult, SyncroError> {
         match run_git(path, &["push"]) {
             Ok(_) => result.pushed = true,
             Err(_) => {
-                let branch = run_git(path, &["rev-parse", "--abbrev-ref", "HEAD"]).map_err(
-                    |e| SyncroError::Git {
-                        repo: repo_name.clone(),
-                        message: e,
-                    },
-                )?;
+                let branch =
+                    run_git(path, &["rev-parse", "--abbrev-ref", "HEAD"]).map_err(|e| {
+                        SyncroError::Git {
+                            repo: repo_name.clone(),
+                            message: e,
+                        }
+                    })?;
                 match run_git(path, &["push", "--set-upstream", "origin", &branch]) {
                     Ok(_) => result.pushed = true,
                     Err(e) => {

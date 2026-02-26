@@ -60,6 +60,7 @@ fn find_git_repos(parent: &Path) -> Result<Vec<PathBuf>, SyncroError> {
         }
     }
 
+    repos.sort();
     Ok(repos)
 }
 
@@ -104,10 +105,82 @@ pub fn expand_repos(paths: &[PathBuf]) -> Vec<PathBuf> {
     result
 }
 
+/// Holds the inforation about a given watched folder and the contained Git repositories
+/// in its subfolders.
+pub struct WatchedFolder {
+    path: PathBuf,
+    sub_dirs: Option<Vec<String>>,
+}
+
+/// Returns a structured representation of the Git repositories
+/// in the provided list of folders.
+///
+/// NOTE: This implementation currently works either with Git repositories or
+/// folders that contain Git repositories on the first level (no deeper levels supported).
+fn expand_repos_structured(paths: &[PathBuf]) -> Vec<WatchedFolder> {
+    assert!(paths.len() > 0, "empty paths");
+
+    let mut expanded = Vec::with_capacity(paths.len());
+
+    for path in paths.iter() {
+        let watched_folder = match is_git_repo(path) {
+            true => WatchedFolder {
+                path: path.to_owned(),
+                sub_dirs: None,
+            },
+            false => {
+                let git_repos_in_folder: Vec<String> = find_git_repos(path)
+                    .expect("no git repositories found in folder")
+                    .iter()
+                    .map(|repo| {
+                        repo.components()
+                            .last()
+                            .unwrap()
+                            .as_os_str()
+                            .to_string_lossy()
+                            .to_string()
+                    })
+                    .collect();
+                WatchedFolder {
+                    path: path.to_owned(),
+                    sub_dirs: Some(git_repos_in_folder),
+                }
+            }
+        };
+
+        expanded.push(watched_folder);
+    }
+
+    expanded
+}
+
+/// List the configured watched directories (and expanded subdirectories).
+pub fn list() -> Result<(), SyncroError> {
+    let config = load()?;
+
+    let watched_folders = expand_repos_structured(&config.repos);
+
+    if watched_folders.is_empty() {
+        println!("No watched repositories.");
+        return Ok(());
+    }
+
+    for watched_folder in watched_folders {
+        match &watched_folder.sub_dirs {
+            None => println!("{}", watched_folder.path.to_string_lossy()),
+            Some(sd) => println!(
+                "{} (contains {} repositories)",
+                watched_folder.path.to_string_lossy(),
+                sd.len()
+            ),
+        }
+    }
+
+    Ok(())
+}
+
 pub fn remove_repo(path: &Path) -> Result<(), SyncroError> {
-    let canonical = path
-        .canonicalize()
-        .unwrap_or_else(|_| path.to_path_buf());
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
     let mut config = load()?;
     config.repos.retain(|r| r != &canonical);

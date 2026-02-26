@@ -6,22 +6,23 @@ use std::path::PathBuf;
 use std::thread;
 
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
 use crossterm::execute;
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph};
-use ratatui::Terminal;
 
 use crate::config;
+use crate::error::SyncroError;
 use crate::git::{self, FileChange, RepoStatus, SyncResult};
 use widgets::{
-    ChangedFilesWidget, CommitFilesWidget, DiffViewWidget, FocusedPane, HelpBar,
-    RepoDetailWidget, RepoListWidget, UnpushedCommitsWidget,
+    ChangedFilesWidget, CommitFilesWidget, DiffViewWidget, FocusedPane, HelpBar, RepoDetailWidget,
+    RepoListWidget, UnpushedCommitsWidget,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -80,20 +81,20 @@ impl App {
             FocusedPane::Commits => {
                 if let Some(repo) = self.current_repo()
                     && !repo.unpushed_commits.is_empty()
-                        && self.commit_cursor < repo.unpushed_commits.len() - 1
-                    {
-                        self.commit_cursor += 1;
-                        self.ensure_commit_files_cached();
-                    }
+                    && self.commit_cursor < repo.unpushed_commits.len() - 1
+                {
+                    self.commit_cursor += 1;
+                    self.ensure_commit_files_cached();
+                }
             }
             FocusedPane::Files => {
                 if let Some(repo) = self.current_repo()
                     && !repo.changed_files.is_empty()
-                        && self.file_cursor < repo.changed_files.len() - 1
-                    {
-                        self.file_cursor += 1;
-                        self.ensure_diff_cached();
-                    }
+                    && self.file_cursor < repo.changed_files.len() - 1
+                {
+                    self.file_cursor += 1;
+                    self.ensure_diff_cached();
+                }
             }
         }
     }
@@ -151,17 +152,19 @@ impl App {
             }
             FocusedPane::Commits => {
                 if let Some(repo) = self.current_repo()
-                    && !repo.unpushed_commits.is_empty() {
-                        self.commit_cursor = repo.unpushed_commits.len() - 1;
-                        self.ensure_commit_files_cached();
-                    }
+                    && !repo.unpushed_commits.is_empty()
+                {
+                    self.commit_cursor = repo.unpushed_commits.len() - 1;
+                    self.ensure_commit_files_cached();
+                }
             }
             FocusedPane::Files => {
                 if let Some(repo) = self.current_repo()
-                    && !repo.changed_files.is_empty() {
-                        self.file_cursor = repo.changed_files.len() - 1;
-                        self.ensure_diff_cached();
-                    }
+                    && !repo.changed_files.is_empty()
+                {
+                    self.file_cursor = repo.changed_files.len() - 1;
+                    self.ensure_diff_cached();
+                }
             }
         }
     }
@@ -291,9 +294,10 @@ impl App {
 
     fn cached_commit_files(&self) -> &[FileChange] {
         if let Some(hash) = self.current_commit_hash()
-            && let Some(files) = self.commit_files_cache.get(&hash) {
-                return files;
-            }
+            && let Some(files) = self.commit_files_cache.get(&hash)
+        {
+            return files;
+        }
         &[]
     }
 
@@ -305,16 +309,12 @@ impl App {
             return ("", "");
         };
         let key = (repo.path.clone(), file.path.clone());
-        let diff = self
-            .diff_cache
-            .get(&key)
-            .map(|s| s.as_str())
-            .unwrap_or("");
+        let diff = self.diff_cache.get(&key).map(|s| s.as_str()).unwrap_or("");
         (file.path.as_str(), diff)
     }
 }
 
-pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+pub fn run() -> Result<(), SyncroError> {
     let cfg = config::load()?;
     if cfg.repos.is_empty() {
         println!("No repos watched. Use `syncro add <path>` to add repositories.");
@@ -357,7 +357,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), SyncroError> {
     loop {
         terminal.draw(|f| {
             let area = f.area();
@@ -368,11 +368,8 @@ fn run_event_loop(
 
             match app.state {
                 AppState::Browsing | AppState::Syncing => {
-                    let outer = Layout::vertical([
-                        Constraint::Min(3),
-                        Constraint::Length(1),
-                    ])
-                    .split(area);
+                    let outer =
+                        Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).split(area);
 
                     let current_repo = app.repos.get(app.cursor);
                     let show_right_panel = app.focused_pane != FocusedPane::Repos;
@@ -383,10 +380,7 @@ fn run_event_loop(
                         // Two-column layout
                         let columns = Layout::default()
                             .direction(Direction::Horizontal)
-                            .constraints([
-                                Constraint::Percentage(55),
-                                Constraint::Percentage(45),
-                            ])
+                            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
                             .split(main_area);
 
                         let left_panes = Layout::vertical([
@@ -407,10 +401,7 @@ fn run_event_loop(
                         match app.focused_pane {
                             FocusedPane::Commits => {
                                 let files = app.cached_commit_files();
-                                f.render_widget(
-                                    CommitFilesWidget { files },
-                                    columns[1],
-                                );
+                                f.render_widget(CommitFilesWidget { files }, columns[1]);
                             }
                             FocusedPane::Files => {
                                 let (title, diff) = app.cached_diff();
@@ -482,20 +473,14 @@ fn run_event_loop(
                             };
 
                             ListItem::new(Line::from(vec![
-                                Span::styled(
-                                    format!(" {icon} "),
-                                    Style::default().fg(color),
-                                ),
+                                Span::styled(format!(" {icon} "), Style::default().fg(color)),
                                 Span::styled(msg, Style::default().fg(color)),
                             ]))
                         })
                         .collect();
 
-                    let chunks = Layout::vertical([
-                        Constraint::Min(3),
-                        Constraint::Length(1),
-                    ])
-                    .split(area);
+                    let chunks =
+                        Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).split(area);
 
                     let list = List::new(items).block(
                         Block::default()
@@ -521,7 +506,7 @@ fn run_event_loop(
                 AppState::Browsing => match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        return Ok(())
+                        return Ok(());
                     }
                     KeyCode::Char('1') => app.set_focused_pane(FocusedPane::Repos),
                     KeyCode::Char('2') => app.set_focused_pane(FocusedPane::Commits),
@@ -532,8 +517,7 @@ fn run_event_loop(
                     KeyCode::Char('G') => app.jump_bottom(),
                     KeyCode::Char(' ') => app.toggle_selection(),
                     KeyCode::Enter => {
-                        if app.focused_pane == FocusedPane::Repos
-                            && app.selected.iter().any(|&s| s)
+                        if app.focused_pane == FocusedPane::Repos && app.selected.iter().any(|&s| s)
                         {
                             app.sync_selected();
                         }
@@ -543,7 +527,7 @@ fn run_event_loop(
                 AppState::Results => match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        return Ok(())
+                        return Ok(());
                     }
                     KeyCode::Enter => {
                         app.refresh_repos();

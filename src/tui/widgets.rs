@@ -64,13 +64,7 @@ impl Widget for RepoListWidget<'_> {
             .max()
             .unwrap_or(0)
             + 2;
-        let max_branch_width = self
-            .repos
-            .iter()
-            .map(|r| r.branch.len())
-            .max()
-            .unwrap_or(0)
-            + 2;
+        let max_branch_width = self.repos.iter().map(|r| r.branch.len()).max().unwrap_or(0) + 2;
 
         let items: Vec<ListItem> = self
             .repos
@@ -120,17 +114,10 @@ impl Widget for RepoListWidget<'_> {
                     Style::default().fg(Color::Yellow)
                 };
 
-                let cursor_indicator = if is_cursor && self.focused {
-                    ">"
-                } else {
-                    " "
-                };
+                let cursor_indicator = if is_cursor && self.focused { ">" } else { " " };
 
                 let line = Line::from(vec![
-                    Span::styled(
-                        format!("{cursor_indicator}{checkbox} "),
-                        indicator_style,
-                    ),
+                    Span::styled(format!("{cursor_indicator}{checkbox} "), indicator_style),
                     Span::styled(format!("{name:<max_name_width$}"), name_style),
                     Span::styled(format!("{branch:<max_branch_width$}"), branch_style),
                     Span::styled(summary, summary_style),
@@ -141,8 +128,7 @@ impl Widget for RepoListWidget<'_> {
             .collect();
 
         let title = " [1] Repos ";
-        let block = pane_block(title, self.focused)
-            .padding(Padding::vertical(1));
+        let block = pane_block(title, self.focused).padding(Padding::vertical(1));
 
         let list = List::new(items).block(block);
         list.render(area, buf);
@@ -163,16 +149,12 @@ impl Widget for RepoDetailWidget<'_> {
             .padding(Padding::new(1, 1, 0, 0));
 
         let Some(repo) = self.repo else {
-            let paragraph =
-                ratatui::widgets::Paragraph::new("No repository selected").block(block);
+            let paragraph = ratatui::widgets::Paragraph::new("No repository selected").block(block);
             paragraph.render(area, buf);
             return;
         };
 
-        let remote = repo
-            .remote_url
-            .as_deref()
-            .unwrap_or("none");
+        let remote = repo.remote_url.as_deref().unwrap_or("none");
 
         let (status_text, status_color) = if repo.error.is_some() {
             ("Error", Color::Red)
@@ -320,7 +302,11 @@ impl Widget for CommitFilesWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let block = Block::default()
             .title(" Commit Files ")
-            .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            .title_style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan))
             .padding(Padding::new(1, 1, 0, 0));
@@ -348,10 +334,7 @@ impl Widget for CommitFilesWidget<'_> {
                     _ => Color::White,
                 };
                 Line::from(vec![
-                    Span::styled(
-                        format!("{} ", f.status),
-                        Style::default().fg(status_color),
-                    ),
+                    Span::styled(format!("{} ", f.status), Style::default().fg(status_color)),
                     Span::styled(&f.path, Style::default().fg(Color::White)),
                 ])
             })
@@ -372,7 +355,11 @@ impl Widget for DiffViewWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let block = Block::default()
             .title(format!(" Diff: {} ", self.title))
-            .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            .title_style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan))
             .padding(Padding::new(1, 1, 0, 0));
@@ -406,8 +393,7 @@ impl Widget for DiffViewWidget<'_> {
             })
             .collect();
 
-        let paragraph = ratatui::widgets::Paragraph::new(lines)
-            .scroll((self.scroll, 0));
+        let paragraph = ratatui::widgets::Paragraph::new(lines).scroll((self.scroll, 0));
         paragraph.render(inner, buf);
     }
 }
